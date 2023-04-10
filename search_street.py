@@ -121,6 +121,8 @@ def get_nearest_tokens_by_city_group(address, city, excludes):
     address = address.replace('р-н','район')
     address = address.replace('пр-кт','проспект')
     address_groups = address.split(',')
+    if len(address_groups) == 1:
+        return []
     nearest_group_tokens = []
     address_group_tokens = []
     city_tokens = []
@@ -213,11 +215,9 @@ def load_city_streets(code):
                 row_dict['street_index'] = row.street_index
                 row_dict['FULL_city'] = row
                 streets_parts_array.append(row_dict)
-    if len(streets_parts_array) == 0:
-        return streets_parts_array
-    df_street_parts = pd.DataFrame(streets_parts_array)   
-    df_street_parts = df_street_parts.set_index('code') 
-    return df_street_parts
+    # df_street_parts = pd.DataFrame(streets_parts_array)   
+    # df_street_parts = df_street_parts.set_index('code') 
+    return streets_parts_array
 
 def get_next_token(tokens,pos):
     for i in range(pos+1, len(tokens)):
@@ -330,42 +330,64 @@ def check_multiple_variants(kladr_possible_items, has_key_word):
                 found_districts = kladr_items
         else:
             checked = kladr_items
-        # проверка по названию улицы
-        if len(checked) > 1:
-            checked_by_name = []
-            for row in checked:
-                if row.name in token_group:
-                    checked_by_name.append(row)
-            if len(checked_by_name) > 0:
-                checked = checked_by_name
+        
         
 
     if len(checked)==1:
         return found_districts, checked
     elif len(checked)==0:
-        checked = kladr_possible_items.values()
+        checked = [x[0] for x in kladr_possible_items.values()]
+
+    # проверка на максимально длинное составное название
+    if len(checked) > 1:
+        max_parts_len = 0  
+        checked_by_parts_len = []
+        for row in checked:
+            if len(row.PARTS) > max_parts_len:
+                max_parts_len = len(row.PARTS)
+        if max_parts_len > 1:
+            for row in checked:
+                if len(row.PARTS) == max_parts_len:
+                    checked_by_parts_len.append(row)
+        if len(checked_by_parts_len) > 0:
+            checked = checked_by_parts_len
+
+    # проверка по названию улицы
+    if len(checked) > 1:
+        checked_by_name = []
+        for key, kladr_items in kladr_possible_items.items():
+            token_group = list(key)[0]
+            kw_index = list(key)[1]
+            for row in checked:
+                if row.name in token_group:
+                    checked_by_name.append(row)
+        if len(checked_by_name) > 0:
+            checked = checked_by_name
 
     # проверка на актуальность
     actual = []
     for c in checked:
-        if c.Index[-2:] == '00':
-            actual.append(c)
+        try:
+            if c.Index[-2:] == '00':
+                actual.append(c)
+        except:
+            print(c)
+
     if len(actual) > 0:
         checked = actual
 
-    # проверка на максимально длинное составное название
+    # проверка на самое длинное название 
     if len(checked) > 1:
-            max_parts_len = 0  
-            checked_by_parts_len = []
-            for row in checked:
-                if len(row.PARTS) > max_parts_len:
-                    max_parts_len = len(row.PARTS)
-            if max_parts_len > 1:
-                for row in checked:
-                    if len(row.PARTS) == max_parts_len:
-                        checked_by_parts_len.append(row)
-            if len(checked_by_parts_len) > 1:
-                checked = checked_by_parts_len
+        max_len = -1
+        for c in checked:
+            if len(c.name) > max_len:
+                max_len = len(c.name)
+        if max_len > 0:
+            checked = [x for x in checked if len(x.name)==max_len]
+    
+    if len(checked) > 1:
+        checked = [checked[0]]
+
         
     return found_districts, checked
 
@@ -432,6 +454,8 @@ def getitemsBykeyword(regcities, tokens,str_address, index_code):
                 elif len(kladr_possible_items) == 1 and len(list(kladr_possible_items.values())[0]) == 1:
                     if 'район' in list(list(kladr_possible_items.keys())[0])[0]:
                         found_districts = [x[0] for x in kladr_possible_items.values()]
+                    else:
+                        kladr_possible_items_all.update(kladr_possible_items)
                 else:
                     kladr_possible_items_all.update(kladr_possible_items)
 
@@ -552,6 +576,8 @@ def search_house_num(address, street_end_index):
     house_part = re.search(r'(\s|,)(дом|д)(\s*|\.?\s*)(\d{1,4})', address)
     house_part_with_letter = re.search(r'(\s|,)(дом|д)(\s*|\.?\s*)(\d{1,4})\s?(/)?\s?[а-я]{1}($|\W)', address)
     house_part_with_num = re.search(r'(\s|,)(дом|д)(\s*|\.?\s*)(\d{1,4})/\d{1,3}(\s?[а-я]{1}($|\W))?', address)
+    if house_part_with_num is None:
+      house_part_with_num = re.search(r'(\s|,)(дом|д)(\s*|\.?\s*)(\d{1,4})(\s?[а-я]{1}?/\d{1,3}($|\W)?)', address)
     lit=''
     house_num = ''
     house_part_num = ''
@@ -560,7 +586,10 @@ def search_house_num(address, street_end_index):
         if house_part_with_letter is not None:
             lit = re.sub('\W|\d','',re.search(r'(\d{1,4})\s?(/)?\s?[а-я]{1}($|\W)', house_part_with_letter.group(0)).group(0)).strip()
         if house_part_with_num is not None:
-            house_part_num = re.sub('(\d{1,4}/)|[а-я]|\s','',re.search(r'(\d{1,4})/\d{1,3}(\s?[а-я]{1}($|\W))?', house_part_with_num.group(0)).group(0)).strip()
+            try:
+                house_part_num = re.sub('(\d{1,4}/)|[а-я]|\s','',re.search(r'(\d{1,4})/\d{1,3}(\s?[а-я]{1}($|\W))?', house_part_with_num.group(0)).group(0)).strip()
+            except:
+                house_part_num = re.sub('(\d{1,4})[а-я]/|\s','',re.search(r'(\d{1,4})(\s?[а-я]{1}/\d{1,3}($|\W))?', house_part_with_num.group(0)).group(0)).strip()
             if lit=="":
                 lit = re.sub('\d|/|\s','',re.search(r'(\d{1,4})/\d{1,3}(\s?[а-я]{1}($|\W))?', house_part_with_num.group(0)).group(0)).strip()
     else:
@@ -582,17 +611,19 @@ def search_house_num(address, street_end_index):
     house_part_corp = re.search(r'(\s?(строение|стр(\.)?|корпус|к\.|блок)\s?)(\d{1,3}|[а-я]{1}($|\W)|\d{1,3}[а-я]{1}($|\W)|[а-я]{1}\d{1,3})', address)
     if house_part_corp is not None:
         house_part_num = re.sub(r'(\s?(строение|стр(\.)?|корпус|к\.|блок)\s?)', '', house_part_corp.group(0)).strip()
+    if house_num is None:
+        house_num = ""
 
 
 #     print("house_num: ", house_num)
 #     print("liter: ",lit)
 #     print("corpus: ", house_part_num)
 
-    return house_num, lit, house_part_num
+    return house_num.strip(), lit.strip(), house_part_num.strip()
 
 
 def load_addresses_from_db():
-    addresses = pd.read_sql("SELECT obj_id,address,region, region_code, district, district_code, city, city_code, locality, locality_code, snt, snt_code FROM public.processed_address_new  where processed = 1 and region_code <> '' and city_code <> '' and obj_id = 367 order by region,city limit 500",sochi_conn)
+    addresses = pd.read_sql("SELECT obj_id,address,region, region_code, district, district_code, city, city_code, locality, locality_code, snt, snt_code FROM public.processed_address_new  where processed = 1 and region_code <> '' and city_code <> '' and obj_id = 583 order by region,city limit 500",sochi_conn)
     
     cur = 0
     cursor = sochi_conn.cursor()
@@ -608,17 +639,17 @@ def load_addresses_from_db():
         city = addr.city
         city_arr = city.split(',')
         cur_city_code = addr.city_code
-        cur_city_code_arr = cur_city_code.split(',')
+        cur_city_code_arr = [code.strip() for code in cur_city_code.split(',')]
 
         locality = addr.locality
         locality_arr = locality.split(',')
         cur_locality_code = addr.locality_code
-        cur_locality_code_arr = cur_locality_code.split(',')
+        cur_locality_code_arr = [code.strip() for code in cur_locality_code.split(',')]
 
         snt = addr.snt
         snt_arr = snt.split(',')
         cur_snt_code = addr.snt_code
-        cur_snt_code_arr = cur_snt_code.split(',')
+        cur_snt_code_arr = [code.strip() for code in cur_snt_code.split(',')]
        
         if len(re.findall(r'\d{6}',addr.address)) > 0:
             index_code = re.findall(r'\d{6}',addr.address)[0]
@@ -629,18 +660,19 @@ def load_addresses_from_db():
         #Как быть со сравнением города, если есть несколько городов
         if full_city_code!=cur_city_code:
             city_code = addr.city_code
-            streets_df = load_city_streets(city_code)
+            streets_list = load_city_streets(city_code)
             if cur_locality_code != "":
-                locality_streets_df = load_city_streets(cur_locality_code)
-                streets_df = pd.concat([streets_df, locality_streets_df]).drop_duplicates()
+                locality_streets_list = load_city_streets(cur_locality_code)
+                streets_list = streets_list + locality_streets_list
             if cur_snt_code != "":
-                snt_streets_df = load_city_streets(cur_snt_code)
-                streets_df = pd.concat([streets_df, snt_streets_df]).drop_duplicates()
-
-            
+                snt_streets_list = load_city_streets(cur_snt_code)
+                streets_list = streets_list + snt_streets_list
             full_city_code=cur_city_code
-        if len(streets_df) == 0:
+        if len(streets_list) == 0:
             continue
+        else:
+            streets_df = pd.DataFrame(streets_list)
+            streets_df = streets_df.set_index('code') 
         excludes = parts_of_name(region)
         if district != '':
             for d in district.split(","):
@@ -648,6 +680,14 @@ def load_addresses_from_db():
                 for p in parts:
                     excludes.append(p)
         for c in city.split(","):            
+            parts = re.sub(r'-',' ',c).split()
+            for p in parts:
+                excludes.append(p)
+        for c in locality.split(","):            
+            parts = re.sub(r'-',' ',c).split()
+            for p in parts:
+                excludes.append(p)
+        for c in snt.split(","):            
             parts = re.sub(r'-',' ',c).split()
             for p in parts:
                 excludes.append(p)
@@ -669,21 +709,27 @@ def load_addresses_from_db():
                     continue
         if street == "":
             tokens = lemmatize_sent(str_address,excludes) 
-            if len(tokens) == 0:
-                continue
-
-            city_district, street, street_end_index = getitemsBykeyword(streets_df, tokens,str_address, index_code)
-            if len(city_district) > 0:
-                for el in city_district:
-                    excludes.append(el.name)
-            if len(street) == 0:
-                nearest_tokens = get_nearest_tokens_by_city_group(str_address,city,excludes) 
-                city_district, street, street_end_index, reason = getitems(streets_df,nearest_tokens,str_address, index_code)
+            if len(tokens) > 0:
+                city_district, street, street_end_index = getitemsBykeyword(streets_df, tokens,str_address, index_code)
+                if len(city_district) > 0:
+                    for el in city_district:
+                        excludes.append(el.name)
+                if len(street) == 0:
+                    nearest_tokens = get_nearest_tokens_by_city_group(str_address,city,excludes) 
+                    city_district_no_kw, street, street_end_index, reason = getitems(streets_df,nearest_tokens,str_address, index_code)
+                    if len(city_district) == 0 and len(city_district_no_kw) > 0:
+                        city_district = city_district_no_kw
+            else:
+                reason = "не нашлась улица"
         # Если улица не нашлась, то останавливаем дальнейший поиск и записываем причину в БД
         if len(street) == 0 and reason != "":
-            postgres_update_query = """ update public.processed_address_new set processed= %s, reason= %s where obj_id = %s """
-            cursor.execute(postgres_update_query, (-1,reason,obj_id))
-            sochi_conn.commit()
+            if len(city_district) > 0:
+                city_district = city_district[0].name
+                postgres_update_query = """ update public.processed_address_new set processed= %s, reason= %s, street_district =%s where obj_id = %s """
+                cursor.execute(postgres_update_query, (-1,reason, city_district, obj_id))
+            else:
+                postgres_update_query = """ update public.processed_address_new set processed= %s, reason= %s where obj_id = %s """
+                cursor.execute(postgres_update_query, (-1,reason, obj_id))
             print(obj_id, ' ', addr.address, ' ', reason)
         if len(street) > 0:
             house_num, lit, corpus = search_house_num(str_address, street_end_index)
@@ -697,18 +743,42 @@ def load_addresses_from_db():
                 city_district = ""
             if house_num == "":
                 reason = "нет номера дома"
-            if len(cur_city_code_arr) > 1:
+            if len(cur_city_code_arr) > 1 or len(cur_locality_code_arr) > 1 or len(cur_snt_code_arr) > 1:
                 city_code_by_street = street_code[:11]
-                cur_city_code_arr_croped = list(map(lambda x: x[:11],cur_city_code_arr))
-                ind = cur_city_code_arr_croped.index(city_code_by_street)
-                checked_city = city_arr[ind]
-                checked_code = city_code_by_street
-                postgres_update_query = """ update public.processed_address_new set city= %s, city_code = %s where obj_id = %s """
+                if len(cur_city_code_arr) > 1:
+                    cur_city_code_arr_croped = list(map(lambda x: x[:11],cur_city_code_arr))
+                    ind = cur_city_code_arr_croped.index(city_code_by_street)
+                    if ind < 0:
+                        checked_city = ''
+                        checked_code = ''
+                    else:
+                        checked_city = city_arr[ind]
+                        checked_code = city_code_by_street
+                    postgres_update_query = """ update public.processed_address_new set city= %s, city_code = %s where obj_id = %s """
+                elif len(cur_locality_code_arr) > 1:
+                    cur_city_code_arr_croped = list(map(lambda x: x[:11],cur_locality_code_arr))
+                    ind = cur_city_code_arr_croped.index(city_code_by_street)
+                    if ind < 0:
+                        checked_city = ''
+                        checked_code = ''
+                    else:
+                        checked_city = locality_arr[ind]
+                        checked_code = city_code_by_street
+                    postgres_update_query = """ update public.processed_address_new set locality= %s, locality_code = %s where obj_id = %s """
+                elif len(cur_snt_code_arr) > 1:
+                    cur_city_code_arr_croped = list(map(lambda x: x[:11],cur_snt_code_arr))
+                    ind = cur_city_code_arr_croped.index(city_code_by_street)
+                    if ind < 0:
+                        checked_city = ''
+                        checked_code = ''
+                    else:
+                        checked_city = snt_arr[ind]
+                        checked_code = city_code_by_street
+                    postgres_update_query = """ update public.processed_address_new set snt= %s, snt_code = %s where obj_id = %s """
                 cursor.execute(postgres_update_query, (checked_city,checked_code,obj_id))
-                # cursor.execute("update [OARB].[ADDRESS] set [city] = ?, [city_code] = ? where [obj_id] = ? and [address] = ?", checked_city,checked_code,obj_id,addr.address)
-            
-            postgres_update_query = """ update public.processed_address_new set processed = %s, street_district =%s, street = %s, street_code = %s, house = %s, lit = %s, corpus = %s where obj_id = %s """
-            cursor.execute(postgres_update_query, (2,city_district, street[0].name,street_code, house_num, lit, corpus,obj_id))
+                
+            postgres_update_query = """ update public.processed_address_new set processed = %s, street_district =%s, street = %s, street_code = %s, house = %s, lit = %s, corpus = %s, reason = %s where obj_id = %s """
+            cursor.execute(postgres_update_query, (2,city_district, street[0].name,street_code, house_num, lit, corpus, reason, obj_id))
             # cursor.execute("update [OARB].[ADDRESS] set [PROCESSED] = 2, [STREET] = ?, [STREET_code] = ?, [HOUSE] = ? where [obj_id] = ? and [address] = ?", street[0].name,street_code,found_house_number,obj_id, addr.address)
             print(obj_id, ' ', addr.address,' district: ',city_district, ', street: ',street[0].name, ', house: ',house_num, ', lit: ', lit, ', corpus: ', corpus) 
         sochi_conn.commit()

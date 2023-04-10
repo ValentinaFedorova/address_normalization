@@ -2,18 +2,13 @@
 
 from natasha import (
     Segmenter,
-    MorphVocab,
-    NewsEmbedding,
-    NewsMorphTagger,
-    NewsNERTagger,
     Doc
 )
-import pyodbc,re
+import re
 import pandas as pd
 import datetime
 import numpy as np
 import datetime
-import os
 from razdel import tokenize, sentenize
 import psycopg2
 #from nltk.stem.snowball import SnowballStemmer
@@ -25,41 +20,38 @@ class AddrItem(object):
         self.Index = code
         self.socr = socr
 
-vowels = ['а','у','о','ы','и','й','э','я','ю','ё','е']
-symbols = ":().,!;'?-\"@#$%^&*+ "
-key_words = ["г","обл","адрес","росреестр","ул","д","кв","республик","рх","рп","р","н",
-             "корп","федерац","область","округ","город","улиц","квартир","п","пер","мкр",
-             "муниципальн","район","дер","республика","улица"]
 
-stop_words = ["российская","федерация","муниципальный","рб","жилое","помещение","проектный",
-              "номер","этаже","подъезде","общей","проектной","площадью","учётом","холодных",
-              "помещений","квартира","однокомнатная","расположенная","этажного","жилого",
-              "находящаяся","находящегося","кадастровый","земельного","участка","управление",
-              "рф","адресу"]
+def get_fias_data_by_region(database, host, user, password, port, region_code, table_name):
+    global df_cities
+    global df_cities_parts
+    global df_subjects
+    cnxn = psycopg2.connect(database=database,
+                            host=host,
+                            user=user,
+                            password=password,
+                            port=port)
+    df_cities = pd.read_sql('SELECT NAME,CODE,SOCR FROM ' + table_name + ' where code like \'' + region_code + '%\' order by NAME',cnxn, index_col="code")
+    df_obj = df_cities.select_dtypes(['object'])
+    df_cities[df_obj.columns] = df_obj.apply(lambda x: x.str.strip())
+    df_cities[df_obj.columns] = df_cities[df_obj.columns].apply(lambda x: x.str.lower())
+    df_cities['name'] = df_cities['name'].astype(str)
+    df_cities['parts'] = df_cities['name'].apply(parts_of_name) 
+    cities_parts_array = []
+    for row in df_cities.itertuples():
+        row_name_parts = word_base_array(parts_of_name(row.name))
+        row_code = row.Index
+        for i in range(len(row_name_parts)):
+            row_dict = {}
+            row_dict['name'] = row_name_parts[i]
+            row_dict['code'] = row_code + str(i+1)
+            row_dict['socr'] = row.socr
+            row_dict['full_city'] = row
+            cities_parts_array.append(row_dict)    
+    df_cities_parts = pd.DataFrame(cities_parts_array)   
+    df_cities_parts = df_cities_parts.set_index('code')     
+    df_subjects = df_cities.filter(regex='\d\d00000000000', axis=0)
+    cnxn.close()
 
-address_key_words = ['обл','область','край','респ','республика','город','г','гор','поселок',
-                         'посёлок','пгт','днт','снт','рп','дп','кп','нп',"ул","улиц","улица","проспект",
-                         "пр-кт","мкр","кв","квартира","к","дер"]
-
-full_cities_name = []
-local_towns = []
-local_towns_code = []
-local_towns_links = []
-distinct_district_names = []
-distinct_city_names = []
-text = []
-#Для Наташи
-segmenter = Segmenter()
-#morph_vocab = MorphVocab()
-emb = NewsEmbedding()
-morph_tagger = NewsMorphTagger(emb)
-ner_tagger = NewsNERTagger(emb)
-#stemmer = SnowballStemmer("russian") 
-
-
-
-    
-  
 def get_part_of_speech(word):
     vowels='уеыаоэиюя'
     adjective_suffixes = ["ого","его","ому","ему","ой","ый","ым","им","ом","ем","ей","ой",
@@ -81,13 +73,20 @@ def get_part_of_speech(word):
     return 'UNDEF'
     
 
-def lemmatize_sent(sent):
+def lemmatize_sent(sent, comma_flag):
     sent = sent.lower()
     sent = sent.replace('р-н','район')
+    sent = sent.replace('р-он','район')
     sent = sent.replace(' р.п. ',' рп ')
+    sent = sent.replace('пр-кт','проспект')
     sent = sent.replace('город-курорт','город')
+    sent = sent.replace('эсто-садок','эстосадок')
+    sent = sent.replace('б-р','бульвар')
     sent = re.sub(r'[^а-я,\d]',' ', sent).strip()
-    sent_groups = sent.split(',')
+    if comma_flag:
+        sent_groups = sent.split(',')
+    else:
+        sent_groups = [sent]
     sent_groups_tokens = []
     for group in sent_groups:
         doc = Doc(group)
@@ -114,12 +113,6 @@ def word_base(word):
             break
     return word[:index]
 
-# def word_base(word):
-#     return stemmer.stem(word)
-
-# def word_base_array(words):
-#     return [stemmer.stem(word) for word in words]
-
 
 def word_base_array(words):
     res = []
@@ -136,62 +129,12 @@ def word_base_array(words):
 def parts_of_name(word):
     return re.sub(r'-',' ',word.strip()).split()
 
+def check_if_real_estate(address):
+    real_estate = re.search(r'участок|участки|уч\.|(лесничество.*(квартал|выдел))|(квартал.*выдел)|з/у', address)
+    if real_estate is not None:
+        return True
+    return False
 
-                
-# cnxn = pyodbc.connect('DRIVER={SQLDriverConnect};SERVER=localhost;DATABASE=kladr')
-cnxn = psycopg2.connect(database="kladr",
-                        host="localhost",
-                        user="postgres",
-                        password="ok",
-                        port="5432")
-df_cities = pd.read_sql('SELECT NAME,CODE,SOCR FROM public.kladr where code like \'23%\' order by NAME',cnxn, index_col="code")
-
-
-df_obj = df_cities.select_dtypes(['object'])
-df_cities[df_obj.columns] = df_obj.apply(lambda x: x.str.strip())
-df_cities[df_obj.columns] = df_cities[df_obj.columns].apply(lambda x: x.str.lower())
-df_cities['name'] = df_cities['name'].astype(str)
-
-
-df_cities['parts'] = df_cities['name'].apply(parts_of_name) 
-
-
-cities_parts_array = []
-for row in df_cities.itertuples():
-    row_name_parts = word_base_array(parts_of_name(row.name))
-    row_code = row.Index
-    for i in range(len(row_name_parts)):
-        row_dict = {}
-        row_dict['name'] = row_name_parts[i]
-        row_dict['code'] = row_code + str(i+1)
-        row_dict['socr'] = row.socr
-        row_dict['full_city'] = row
-        cities_parts_array.append(row_dict)
-        
-df_cities_parts = pd.DataFrame(cities_parts_array)   
-df_cities_parts = df_cities_parts.set_index('code')     
-print(df_cities_parts.head())    
-    
-
-subjects = ["ао","аобл","край","обл","респ"]
-df_subjects = df_cities.filter(regex='\d\d00000000000', axis=0)
-
-
-df_city_g = df_cities[df_cities['socr'] == 'г']
-
-small_city_area = ["дп","кп","рп","нп","снт","днт","тер. днт","тер. снт","тер. тсн","тер", "жст"]
-df_small_city_area = df_cities[df_cities['socr'].isin(small_city_area)]
-
-
-villagies_key_words = ["пгт","с/мо","с/п","д","п","с","с/о","дер", "аул"]
-city_key_word = ["г","гор","город"]
-district_key_words = ["р","район","р-н"]
-df_villages = df_cities[df_cities['socr'].isin(villagies_key_words)]
-
-
-df_mcr = df_cities[df_cities['socr'] == 'мкр']
-
-df_quarter = df_cities[df_cities['socr'] == 'кв-л']
 
 
 
@@ -208,35 +151,6 @@ def search_object_by_code(code,obj_df):
     found = obj_df.query('code.str.startswith("'+code+'")',engine = 'python')
     return found
 
-def get_context(tokens,possible_names):
-    address_uniq_codes = set()
-    context_part = pd.DataFrame()
-    for i in range(len(tokens)):
-        for index,row in possible_names.iterrows():
-            parts = row['parts']
-            parts_amount = len(parts)
-            if parts_amount>1:
-                startindex = max(0, i - parts_amount)
-                endindex = min(len(tokens),startindex + 2*parts_amount)
-                parts_cnt = 0
-                for s in range(startindex,endindex):
-                    for j in range(parts_amount):
-                        if tokens[s] == parts[j]:
-                            parts_cnt += 1
-                if parts_cnt == parts_amount: 
-                    if row['code'] not in address_uniq_codes:
-                        context_part = context_part.append(row)
-                        address_uniq_codes.add(row['code'])
-            else:
-                if tokens[i] == row['parts'][0]:
-                    if row['code'] not in address_uniq_codes:
-                        context_part = context_part.append(row)
-                        address_uniq_codes.add(row['code'])
-    return context_part
-
-
-
-context = {}   
       
 def to_lower_case(values):
     res = []
@@ -261,49 +175,99 @@ def get_prev_token(tokens,pos):
             return tokens[i]
     return ''
 
-def getRegion(tokens):
-    kladr_possible_items = []
-    croped_tokens = word_base_array(tokens)
-    
-    for i in range(len(tokens)):
-        kladr_items = pd.DataFrame()
-        if tokens[i] not in key_words and len(tokens[i]) > 1 and not tokens[i].isdigit(): 
-            cur_token=tokens[i]
-        else:
-            continue
-    
-        kladr_items = df_subjects.query("name.str.contains('"+word_base(cur_token)+"')",engine = 'python')
-        
-        for row in kladr_items.itertuples():  
-            parts = row.parts
-            parts_amount = len(parts)
-            if parts_amount>1:
-                startindex = max(0, i - parts_amount)
-                endindex = min(len(tokens), i + parts_amount + 1)
-                parts_cnt = 0
-                for s in range(startindex,endindex):
-                    for j in range(parts_amount):
-                        if croped_tokens[s] == word_base(parts[j]) and get_part_of_speech(tokens[s]) == get_part_of_speech(parts[j]):
-                            parts_cnt += 1
-                if parts_cnt == parts_amount: 
-                    kladr_possible_items.append(row)
-                    
+def check_equals_parts(kladr_items, current_token, croped_current_token, current_token_group, croped_current_token_group, current_index, group_flag):
+    checked_kladr_items = []
+    checked_result = {}
+    for k_row in kladr_items.itertuples():
+        row = k_row.full_city
+        parts = row.parts
+        parts_amount = len(parts)
+        if parts_amount>1:
+            if current_index < 0:
+                startindex = 0
+                endindex = len(current_token_group)
             else:
-                if word_base(cur_token) == word_base(row.parts[0]) and get_part_of_speech(cur_token) == get_part_of_speech(row.parts[0]):
-                    kladr_possible_items.append(row)
-    ret = []
-    for i in kladr_possible_items:
-        if i not in ret:
-            ret.append(i)
-    return ret
+                startindex = max(0, current_index - parts_amount - 1)
+                endindex = min(len(current_token_group),current_index + parts_amount + 1)
+            parts_cnt = 0
+            for s in range(startindex,endindex):
+                for j in range(parts_amount):
+                    if croped_current_token_group[s] == word_base(parts[j]) and get_part_of_speech(current_token_group[s]) == get_part_of_speech(parts[j]):
+                        parts_cnt += 1
+            if parts_cnt == parts_amount and row not in checked_kladr_items: 
+                checked_kladr_items.append(row)
+        else:
+            if current_token!="":
+                if croped_current_token == word_base(row.parts[0]) and get_part_of_speech(current_token) == get_part_of_speech(row.parts[0]) and row not in checked_kladr_items:
+                    checked_kladr_items.append(row)
+            else:
+                for i in range(len(current_token_group)):
+                    if croped_current_token_group[i] == word_base(row.parts[0]) and get_part_of_speech(current_token_group[i]) == get_part_of_speech(row.parts[0]) and row not in checked_kladr_items:
+                        checked_kladr_items.append(row)
+    if len(checked_kladr_items) > 0:
+        if group_flag:
+            checked_result[(tuple(current_token_group), current_index)] = checked_kladr_items
+        else:
+            checked_result[(current_token, current_index)] = checked_kladr_items
+    return checked_result
+
+def check_multiple_variants(kladr_possible_items):
+    checked = kladr_possible_items
+    # проверка на максимально длинное составное название
+    if len(checked) > 1:
+        max_parts_len = 0  
+        checked_by_parts_len = []
+        for row in checked:
+            if len(row.parts) > max_parts_len:
+                max_parts_len = len(row.parts)
+        if max_parts_len > 1:
+            for row in checked:
+                if len(row.parts) == max_parts_len:
+                    checked_by_parts_len.append(row)
+        if len(checked_by_parts_len) > 0:
+            checked = checked_by_parts_len
+
+    # # проверка по названию 
+    # if len(checked) > 1:
+    #     checked_by_name = []
+    #     for key, kladr_items in kladr_possible_items.items():
+    #         token_group = list(key)[0]
+    #         kw_index = list(key)[1]
+    #         for row in checked:
+    #             if row.name in token_group:
+    #                 checked_by_name.append(row)
+    #     if len(checked_by_name) > 0:
+    #         checked = checked_by_name
+
+    # проверка на актуальность
+    actual = []
+    for c in checked:
+        try:
+            if c.Index[-2:] == '00':
+                actual.append(c)
+        except:
+            print(c)
+
+    if len(actual) > 0:
+        checked = actual
+
+    # проверка на самое длинное название 
+    if len(checked) > 1:
+        max_len = -1
+        for c in checked:
+            if len(c.name) > max_len:
+                max_len = len(c.name)
+        if max_len > 0:
+            checked = [x for x in checked if len(x.name)==max_len]
+        
+    return checked
 
 
-def getitemsBykeyword(regcities, tokens, keywords, both_direction):
-
-    kladr_possible_items = []
+def getitemsBykeyword(regcities, tokens, keywords, group_flag):
+    kladr_possible_items_all = {}
     curkeywords=[]
     croped_tokens = word_base_array(tokens)
-    
+    checked = []
     max_len = 0
     for i in range(len(tokens)):
         kladr_items = pd.DataFrame()
@@ -319,158 +283,50 @@ def getitemsBykeyword(regcities, tokens, keywords, both_direction):
                 curkeywords = district_key_words
             else:
                 continue
-            if i<len(tokens)-1:
-
-                if both_direction:
-                    cur_token1=get_next_token(tokens,i)
-                    cur_token2=get_prev_token(tokens,i)
-                    wbcur_token1 = word_base(cur_token1)
-                    wbcur_token2 = word_base(cur_token2)
-                    if len(wbcur_token1) == 1:
-                       wbcur_token1 = ''
-                    if len(wbcur_token2) == 1:
-                       wbcur_token2 = ''
-                       
-                    if wbcur_token1!='' and wbcur_token2!='':
-                        kladr_items = regcities.query( "socr ==  @curkeywords and ( name == '"+wbcur_token1+"' or name == '"+wbcur_token2+"' )",engine = 'python')
-                        #kladr_items = regcities.query( "SOCR ==  @keywords and ( NAME.str.contains('"+cur_token1+"') or NAME.str.contains('"+cur_token2+"') )",engine = 'python')
-                    elif wbcur_token1!='' and wbcur_token2=='':
-                        kladr_items = regcities.query( "socr == @curkeywords and name == '" + wbcur_token1 + "'",engine = 'python')
-                        #kladr_items = regcities.query( "SOCR == @keywords and NAME.str.contains('" + cur_token1 + "')",engine = 'python')
-                    elif wbcur_token1=='' and wbcur_token2!='':
-                        kladr_items = regcities.query( "socr == @curkeywords and name == '" + wbcur_token2 + "'",engine = 'python')
-                        #kladr_items = regcities.query( "SOCR == @keywords and NAME.str.contains('" + cur_token2 + "')",engine = 'python')
-                    else:
-                        continue  
-                    for k_row in kladr_items.itertuples():
-                        row = k_row.full_city
-                        parts = row.parts
-                        parts_amount = len(parts)
-                        if parts_amount>1:
-                            startindex = max(0, i - parts_amount - 1)
-                            endindex = min(len(tokens),i + parts_amount + 1)
-                            parts_cnt = 0
-                            for s in range(startindex,endindex):
-                                for j in range(parts_amount):
-                                    if croped_tokens[s] == word_base(parts[j]) and get_part_of_speech(tokens[s]) == get_part_of_speech(parts[j]):
-                                        parts_cnt += 1
-                            if parts_cnt == parts_amount: 
-                                kladr_possible_items.append(row)
-                                if parts_amount > max_len:
-                                    max_len = parts_amount
-                                
-                        else:
-                            if word_base(cur_token1) == word_base(row.parts[0]) and get_part_of_speech(cur_token1) == get_part_of_speech(row.parts[0]):
-                                kladr_possible_items.append(row)
-                            if word_base(cur_token2) == word_base(row.parts[0]) and get_part_of_speech(cur_token2) == get_part_of_speech(row.parts[0]):
-                                kladr_possible_items.append(row)
-
-
-
-                else:
-                    cur_token=get_next_token(tokens,i)
-                    wbcur_token = word_base(cur_token)
-                    if wbcur_token == 1:
-                       wbcur_token = ''
-                    if wbcur_token!='':
-                        kladr_items = regcities.query( "socr ==  @curkeywords and name == '"+wbcur_token+"'",engine = 'python')
-                        #kladr_items = regcities.query( "SOCR ==  @keywords and NAME.str.contains('"+cur_token+"')",engine = 'python')
-                        if len(kladr_items)==0 and i>0:
-                            cur_token = get_prev_token(tokens,i)
-                            wbcur_token = word_base(cur_token)
-                            if wbcur_token!='':
-                                kladr_items = regcities.query( "socr == @curkeywords and name == '" + wbcur_token + "'",engine = 'python')
-                                #kladr_items = regcities.query( "SOCR == @keywords and NAME.str.contains('" + cur_token + "')",engine = 'python')
-                    for k_row in kladr_items.itertuples(): 
-                        row = k_row.full_city
-                        parts = row.parts
-                        parts_amount = len(parts)
-                        if parts_amount>1:
-                            startindex = max(0, i - parts_amount)
-                            endindex = min(len(tokens), i + parts_amount + 1)
-                            parts_cnt = 0
-                            for s in range(startindex,endindex):
-                                for j in range(parts_amount):
-                                    if croped_tokens[s] == word_base(parts[j]) and get_part_of_speech(tokens[s]) == get_part_of_speech(parts[j]):
-                                        parts_cnt += 1
-                            if parts_cnt == parts_amount: 
-                                kladr_possible_items.append(row)
-                                if parts_amount > max_len:
-                                    max_len = parts_amount
-                                
-                        else:
-                            if word_base(cur_token) == word_base(row.parts[0]) and get_part_of_speech(cur_token) == get_part_of_speech(row.parts[0]):
-                                kladr_possible_items.append(row)
-                          
-            elif i>0:
+            if i<len(tokens)-1:    
+                cur_token=get_next_token(tokens,i)
+                wbcur_token = word_base(cur_token)
+                if wbcur_token!='' and len(wbcur_token) > 1 and not wbcur_token.isdigit():
+                    kladr_items = regcities.query( "socr ==  @curkeywords and name == '"+wbcur_token+"'",engine = 'python')
+               
+            if i==len(tokens)-1 or len(kladr_items)==0:
                 cur_token = get_prev_token(tokens,i)
                 wbcur_token = word_base(cur_token)
-                if wbcur_token == 1:
-                    wbcur_token = ''
-                if wbcur_token!='':
+                if wbcur_token!='' and len(wbcur_token) > 1 and not wbcur_token.isdigit():
                     kladr_items = regcities.query( "socr == @curkeywords and name == '"+ wbcur_token +"'",engine = 'python')
-                for k_row in kladr_items.itertuples(): 
-                        row = k_row.full_city
-                        parts = row.parts
-                        parts_amount = len(parts)
-                        if parts_amount>1:
-                            startindex = max(0, i - parts_amount)
-                            endindex = min(len(tokens), i + parts_amount + 1)
-                            parts_cnt = 0
-                            for s in range(startindex,endindex):
-                                for j in range(parts_amount):
-                                    if croped_tokens[s] == word_base(parts[j]) and get_part_of_speech(tokens[s]) == get_part_of_speech(parts[j]):
-                                        parts_cnt += 1
-                            if parts_cnt == parts_amount: 
-                                kladr_possible_items.append(row)
-                                if parts_amount > max_len:
-                                    max_len = parts_amount
-                                
-                        else:
-                            if word_base(cur_token) == word_base(row.parts[0]) and get_part_of_speech(cur_token) == get_part_of_speech(row.parts[0]):
-                                kladr_possible_items.append(row)    
+            
+            if group_flag:
+                kladr_possible_items = check_equals_parts(kladr_items, cur_token, wbcur_token, tokens, croped_tokens, i, True) 
+            else:
+                kladr_possible_items = check_equals_parts(kladr_items, cur_token, wbcur_token, tokens, croped_tokens, i, False)
+
+            kladr_possible_items_all.update(kladr_possible_items)
+
+
     
-    ret=[]
-    for i in kladr_possible_items:
-        if i not in ret:
-            ret.append(i)
-    if len(ret) > 1:
-        max_len = 0  
+    if not kladr_possible_items_all:
         checked = []
-        for row in ret:
-            if len(row.parts) > max_len:
-                max_len = len(row.parts)
-        if max_len > 1:
-            for row in ret:
-                if len(row.parts) == max_len:
-                    checked.append(row)
-            ret = checked
-        if len(ret) > 1:
-            actual = [] 
-            for row in ret:
-                if row.Index[-2:] == '00':
-                    actual.append(row)
-            if len(actual) > 0:
-                ret = actual
-    if len(ret) > 1:
-        checked_by_name = []
-        for row in ret:
-            if row.name in tokens:
-                checked_by_name.append(row)
-        if len(checked_by_name) > 0:
-                ret = checked_by_name
+    elif len(list(kladr_possible_items_all.values())[0]) > 1 or len(kladr_possible_items_all)>1:
+        if group_flag:
+            checked = check_multiple_variants([x for x in kladr_possible_items_all.values()][0])
+        else:
+            for v in kladr_possible_items_all.values():
+                checked += check_multiple_variants(v)
+    else:
+        checked = [x[0] for x in kladr_possible_items_all.values()]  
+    
 
-    return ret
+    return checked
 
-def getitems(regcities, tokens):
+def getitems(regcities, tokens, group_flag):
 
-    kladr_possible_items = []
+    kladr_possible_items_all = {}
     keywords = ["ао","аобл","край","обл","респ"]
+    checked = []
     for group in tokens:
-        group = [x for x in group if len(x) > 2]
+        group = [x for x in group if len(x) > 2 and x not in address_key_words]
         croped_tokens = word_base_array(group)
-        
-        
+    
         words=[]
         for i in range(len(group)):
             kladr_items = pd.DataFrame()
@@ -479,47 +335,36 @@ def getitems(regcities, tokens):
             else:
                 continue
             words.append("name == '"+cur_token+"'")
-            #words.append("NAME.str.contains('"+cur_token+"')")
         
         strwords =" or ".join(words)
         if strwords!="":
             kladr_items = regcities.query("socr != @keywords and ("+strwords+" )",engine = 'python')
-        
-            for k_row in kladr_items.itertuples():  
-                row = k_row.full_city
-                parts = row.parts
-                parts_amount = len(parts)
-                
-                parts_cnt = 0
-                for s in range(0,len(group)):
-                    for j in range(parts_amount):
-                        if croped_tokens[s] == word_base(parts[j]) and get_part_of_speech(group[s]) == get_part_of_speech(parts[j]):
-                            parts_cnt += 1
-                if parts_cnt == parts_amount: 
-                    kladr_possible_items.append(row)
-    ret=[]
-    for i in kladr_possible_items:
-        if i not in ret:
-            ret.append(i)
-    if len(ret) > 1:
-        max_len = 0  
+
+            if len(kladr_items) > 0:
+                if group_flag:
+                    kladr_possible_items = check_equals_parts(kladr_items, "", "", group, croped_tokens, -1, True)
+                else:
+                    kladr_items = kladr_items.sort_values(by='name')
+                    kladr_items_grouped = kladr_items.groupby('name').groups
+                    for croped_token, v in kladr_items_grouped.items():
+                        possible_items_by_token = kladr_items.filter(items = v.tolist(), axis=0)
+                        token = [el for el in possible_items_by_token.iloc[0].full_city.parts if croped_token in el][0]
+                        kladr_possible_items = check_equals_parts(possible_items_by_token, token, croped_token, group, croped_tokens, -1, False)
+                        kladr_possible_items_all.update(kladr_possible_items)
+                kladr_possible_items_all.update(kladr_possible_items)
+
+    if not kladr_possible_items_all:
         checked = []
-        for row in ret:
-            if len(row.parts) > max_len:
-                max_len = len(row.parts)
-        if max_len > 1:
-            for row in ret:
-                if len(row.parts) == max_len:
-                    checked.append(row)
-            ret = checked
-        if len(ret) > 1:
-            actual = [] 
-            for row in ret:
-                if row.Index[-2:] == '00':
-                    actual.append(row)
-            if len(actual) > 0:
-                ret = actual
-    return ret
+    elif len(list(kladr_possible_items_all.values())[0]) > 1 or len(kladr_possible_items_all)>1:
+        if group_flag:
+            checked = check_multiple_variants(list(kladr_possible_items_all.values())[0])
+        else:
+            for v in kladr_possible_items_all.values():
+                checked += check_multiple_variants(v)
+    else:
+        checked = [x for x in kladr_possible_items_all.values()][0]
+
+    return checked
 
 def get_cities_by_region(found_area):
     areaquery=""
@@ -538,14 +383,11 @@ def get_cities_by_region(found_area):
     return regcities
 
 def search_region(tokens):
-    context = {}
     excludes=[]
     areas = pd.DataFrame()
     areas_array = []
     croped_tokens = word_base_array(tokens)
 
-    
-    
     for i in range(len(tokens)):
         if tokens[i] == 'обл' or tokens[i] == 'область' or tokens[i] == 'край':
             excludes.append(i)
@@ -574,11 +416,11 @@ def search_region(tokens):
             regobj = AddrItem('ямало-ненецкий','8900000000000', 'ао')
             areas_array.append(regobj)
         elif tokens[i] == 'респ' or tokens[i] == 'республика':
+            #check
             excludes.append(i)
             startindex = max(0,i-2)
             endindex = min(len(tokens),i+3)
             variances = []
-            pos_exclude=[]
             for j in range(startindex,endindex):
                 if i != j:
                     parts = parts_of_name(tokens[j])
@@ -587,126 +429,83 @@ def search_region(tokens):
                             variances.append(p)
             res = word_base_array(variances)
             reg = possible_address_objects(res,df_subjects)
-            for row in reg.itertuples():  
-                parts = row.parts
-                parts_amount = len(parts)
-                
-                parts_cnt = 0
-                for s in range(startindex,endindex):
-                    for j in range(parts_amount):
-                        if croped_tokens[s] == word_base(parts[j]) and get_part_of_speech(tokens[s]) == get_part_of_speech(parts[j]):
-                            parts_cnt += 1
-                if parts_cnt == parts_amount:
-                    new_i=len(areas)
-                    areas_array.append(row)
-                    for s in range(startindex,endindex):
-                        for j in range(parts_amount):
-                            if croped_tokens[s] == word_base(parts[j]) and get_part_of_speech(tokens[s]) == get_part_of_speech(parts[j]):
-                                excludes.append(s)
+
+            areas_array = check_equals_parts(reg, '', '', tokens, croped_tokens, -1, True)
+
         if len(areas)> 0 or len(areas_array)>0:
             break
                 
     for row in areas.itertuples():
         areas_array.append(row)
 
-            
-    # if len(areas_array) == 0:
-    #     context['area'] = getRegion(tokens)
-    # else:      
-    context['area'] = areas_array
-    
-    if len(context['area']) > 1:
-        max_len=0
-        for row in context['area']:
-            if len(row.parts) > max_len:
-                max_len = len(row.parts)
-        checked = []
-        if max_len > 1:
-            for row in context['area']:
-                if len(row.parts) == max_len:
-                    checked.append(row)
-            context['area'] = checked
+    if len(areas_array) > 1:
+        areas_array = check_multiple_variants(areas_array)
+     
 
-    return context['area']
+    return areas_array
 
 
-def search_district(tokens, regcities, found_area):
-    context = {}
-    possible_cities = []
-    croped_tokens = word_base_array(tokens)
-
-    cities_socr_rn=getitemsBykeyword(regcities,tokens, ['р-н', 'район','р'] ,  True)
-    
-    unic_city_names = []
-    unic_city_codes = []
-    actual_codes = ['01','02','03','04','05','06','07','08','09'] + [str(i) for i in range(10,51)]    
- 
-
-
-    if len(cities_socr_rn) > 1:
-        max_len_rn = 0  
-        checked_rn = []
-        for row in cities_socr_rn:
-            if len(row.parts) > max_len_rn:
-                max_len_rn = len(row.parts)
-        if max_len_rn > 1:
-            for row in cities_socr_rn:
-                if len(row.parts) == max_len_rn:
-                    checked_rn.append(row)
-            cities_socr_rn = checked_rn
-    
-
+def search_district(tokens, regcities):
+    cities_socr_rn=getitemsBykeyword(regcities,tokens, ['р-н', 'район','р'], True)
     return cities_socr_rn
 
 
-def search_city(tokens, regcities, found_area, found_district):   
+def search_city(tokens, regcities, found_district, group_flag):   
 
-    excludes=['ул', 'улица', 'проспект', 'бульвар']
+    excludes=['ул', 'улица', 'проспект', 'бульвар', 'пер', 'переулок', 'район', 'дом', 'д']
     possible_cities = []
     cities_socr_g = []
     cities_socr_snt = []
     cities_socr_vlg = []
-    unprocessed_tokens = tokens.copy()
-    for group in tokens:
-        if list(set(group) & set(excludes)):
-            continue
-        cities=getitemsBykeyword(regcities,group, ['г', 'город','гор']+small_city_area + villagies_key_words,  True)
-        if len(cities) > 0:
-            unprocessed_tokens.remove(group)
-        for city_el in cities:
-            if city_el.socr == 'г' and city_el not in cities_socr_g:
-                cities_socr_g.append(city_el)
-            elif city_el.socr in small_city_area and city_el not in cities_socr_snt:
-                cities_socr_snt.append(city_el)
-            elif city_el.socr in villagies_key_words and city_el not in cities_socr_vlg:
-                cities_socr_vlg.append(city_el)
-    unprocessed_tokens = [x for x in unprocessed_tokens if 'район' not in x and 'ул' not in x and 'улица' not in x and 'дом' not in x]        
-    if len(cities_socr_vlg) == 0:
-        possible_cities = getitems(regcities, unprocessed_tokens)
-        for possible_obj in possible_cities:
-            if possible_obj.socr in villagies_key_words:
-                cities_socr_vlg.append(possible_obj)
-        possible_cities = []
-
-
-    if len(cities_socr_snt) == 0:
-        possible_cities = getitems(regcities, unprocessed_tokens)
-        for possible_obj in possible_cities:
-            if possible_obj.socr in small_city_area:
-                cities_socr_snt.append(possible_obj)
-        possible_cities = []
-
-    snts=[]
-    for city in cities_socr_g:
-        city_code=city.Index[:8]
-
-        cur_snt = list(filter(lambda x: x.Index[:8] == city_code, cities_socr_snt))
-        snts=snts+cur_snt
-
-    
-    if len(snts)==0:
-        snts=cities_socr_snt
     villagies = []
+    snts=[]
+    cities = []
+    unprocessed_tokens = tokens.copy()
+    if group_flag:
+        for group in tokens:
+            if list(set(group) & set(excludes)):
+                continue
+            cities+=getitemsBykeyword(regcities,group, ['г', 'город','гор']+small_city_area + villagies_key_words, True)
+            if len(cities) > 0:
+                unprocessed_tokens.remove(group)
+    else:
+        cities+=getitemsBykeyword(regcities,tokens, ['г', 'город','гор']+small_city_area + villagies_key_words, False)
+    for city_el in cities:
+        if city_el.socr == 'г' and city_el not in cities_socr_g:
+            cities_socr_g.append(city_el)
+        elif city_el.socr in small_city_area and city_el not in cities_socr_snt:
+            cities_socr_snt.append(city_el)
+        elif city_el.socr in villagies_key_words and city_el not in cities_socr_vlg:
+            cities_socr_vlg.append(city_el)
+    if group_flag:
+        unprocessed_tokens = [x for x in unprocessed_tokens if len(set(x)&set(excludes))==0]    
+    else:
+        unprocessed_tokens = [unprocessed_tokens]
+    if len(unprocessed_tokens) > 0:  
+        if len(cities_socr_vlg) == 0 or len(cities_socr_snt) == 0:
+            if group_flag:
+                possible_cities = getitems(regcities, unprocessed_tokens, True)
+            else:
+                possible_cities = getitems(regcities, unprocessed_tokens, False)
+            for possible_obj in possible_cities:
+                if possible_obj.socr in villagies_key_words and possible_obj not in cities_socr_vlg:
+                    cities_socr_vlg.append(possible_obj)
+                elif possible_obj.socr in small_city_area and possible_obj not in cities_socr_snt:
+                    cities_socr_snt.append(possible_obj)
+                elif possible_obj.socr in city_key_word and possible_obj not in cities_socr_g:
+                    cities_socr_g.append(possible_obj)
+            possible_cities = []
+        
+        # Если нашлось СНТ, то осуществляем проверку на наличие данного СНТ в городе
+        if len(cities_socr_snt) > 0:
+            for city in cities_socr_g:
+                city_code=city.Index[:8]
+                cur_snt = list(filter(lambda x: x.Index[:8] == city_code, cities_socr_snt))
+                snts=snts+cur_snt
+            if len(snts)==0:
+                snts=cities_socr_snt
+
+    # Проверка наличия деревни в найденном районе 
     for rn in found_district:
         rn_code=rn.Index[:5]
         cur_vlgs = list(filter(lambda x: x.Index[:5] == rn_code, cities_socr_vlg))
@@ -714,8 +513,11 @@ def search_city(tokens, regcities, found_area, found_district):
     if len(villagies)==0:
         villagies=cities_socr_vlg   
    
-    if len(villagies) == 0 and len(snts) == 0 and len(cities_socr_g) == 0:
-        possible_cities = getitems(regcities, tokens)
+    if len(villagies) == 0 and len(snts) == 0 and len(cities_socr_g) == 0 and len(unprocessed_tokens) > 0:
+        if group_flag:
+            possible_cities = getitems(regcities, unprocessed_tokens, True)
+        else:
+            possible_cities = getitems(regcities, unprocessed_tokens, False)
     
     cities_wo_keys = []    
     if len(possible_cities) > 0 and len(found_district) > 0:
@@ -724,277 +526,21 @@ def search_city(tokens, regcities, found_area, found_district):
             cur_cities = list(filter(lambda x: x.Index[:5] == rn_code, possible_cities))
             cities_wo_keys=cities_wo_keys+cur_cities
         
-    elif len(possible_cities) > 0 and len(found_area) > 0:
-        for row in found_area:
-            area_code = row.Index[:2]
-            cur_cities = list(filter(lambda x: x.Index[:2] == area_code, possible_cities))
-            cities_wo_keys=cities_wo_keys+cur_cities
+
     if len(possible_cities) > 0 and len(found_district) == 0:
         for p in possible_cities:
             if p.socr == 'р-н' and p not in found_district:
                 found_district.append(p)
         cities_wo_keys = possible_cities
 
-
-    # if len(cities_socr_g) > 1:
-    #     max_len_g = 0  
-    #     checked_rn = []
-    #     for row in cities_socr_g:
-    #         if len(row.parts) > max_len_g:
-    #             max_len_g = len(row.parts)
-    #     if max_len_g > 1:
-    #         for row in cities_socr_g:
-    #             if len(row.parts) == max_len_g:
-    #                 checked_rn.append(row)
-    #         cities_socr_g = checked_rn
-            
-    #     actual = []    
-    #     if len(cities_socr_g) > 1:
-    #         for row in cities_socr_g:
-    #             if row.Index[-2:] == '00':
-    #                 actual.append(row)
-    #         if len(actual) > 0:
-    #             cities_socr_g = actual
-    # if len(snts) > 1:
-    #     max_len = 0  
-    #     checked_rn = []
-    #     for row in snts:
-    #         if len(row.parts) > max_len:
-    #             max_len = len(row.parts)
-    #     if max_len > 1:
-    #         for row in snts:
-    #             if len(row.parts) == max_len:
-    #                 checked_rn.append(row)
-    #         snts = checked_rn
-    #     actual = []    
-    #     if len(snts) > 1:
-    #         for row in snts:
-    #             if row.Index[-2:] == '00':
-    #                 actual.append(row)
-    #         if len(actual) > 0:
-    #             snts = actual
-    # if len(villagies) > 1:
-    #     max_len = 0  
-    #     checked_rn = []
-    #     for row in villagies:
-    #         if len(row.parts) > max_len:
-    #             max_len = len(row.parts)
-    #     if max_len > 1:
-    #         for row in villagies:
-    #             if len(row.parts) == max_len:
-    #                 checked_rn.append(row)
-    #         villagies = checked_rn
-    #     actual = []    
-    #     if len(villagies) > 1:
-    #         for row in villagies:
-    #             if row.Index[-2:] == '00':
-    #                 actual.append(row)
-    #         if len(actual) > 0:
-    #             villagies = actual
-    # if len(cities_wo_keys) > 1:
-    #     max_len = 0  
-    #     checked_rn = []
-    #     for row in cities_wo_keys:
-    #         if len(row.parts) > max_len:
-    #             max_len = len(row.parts)
-    #     if max_len > 1:
-    #         for row in cities_wo_keys:
-    #             if len(row.parts) == max_len:
-    #                 checked_rn.append(row)
-    #         cities_wo_keys = checked_rn
-    #     actual = []    
-    #     if len(cities_wo_keys) > 1:
-    #         for row in cities_wo_keys:
-    #             if row.Index[-2:] == '00':
-    #                 actual.append(row)
-    #         if len(actual) > 0:
-    #             cities_wo_keys = actual
-
     return found_district,cities_socr_g,snts,villagies,cities_wo_keys
                 
-def process_key_words(tokens, cities_dict, found_area):
 
-    context = {}
-    excludes=[]
-    possible_cities = []
-    cities_by_area = pd.DataFrame()
-    streets_by_city = pd.DataFrame()
-    houses_by_city = pd.DataFrame()
-    croped_tokens = word_base_array(tokens)
-
-    areaquery=""
-    cnt=0
-    for row in found_area:
-        cnt+=1
-        area_code = row.Index[:2]
-        if areaquery!='':
-            areaquery+=' or '
-        # areaquery+="CODE.str.startswith('"+area_code+"')"
-        areaquery=area_code+"\d{11}"
-    if areaquery!='':
-        if cities_dict.get(area_code) is None:
-            #regcities = df_cities.filter(regex=areaquery, axis=0)
-            regcities = df_cities_parts.filter(regex=areaquery, axis=0)
-            cities_dict[area_code] = regcities
-        else:
-            regcities = cities_dict[area_code]
-    else:
-        regcities = df_cities_parts
-
-    cities=getitemsBykeyword(regcities,tokens, ['р-н', 'район','р','г', 'город','гор']+small_city_area + villagies_key_words, areaquery,  True, excludes)
-    cities_socr_g = []
-    cities_socr_rn = []
-    cities_socr_snt = []
-    cities_socr_vlg = []
-
-    for city_el in cities:
-        if city_el.socr == 'г':
-            cities_socr_g.append(city_el)
-        elif city_el.socr == 'р-н':
-            cities_socr_rn.append(city_el)
-        elif city_el.socr in small_city_area:
-            cities_socr_snt.append(city_el)
-        elif city_el.socr in villagies_key_words:
-            cities_socr_vlg.append(city_el)
-            
-
-
-    snts=[]
-    for city in cities_socr_g:
-        city_code=city.Index[:8]
-
-        cur_snt = list(filter(lambda x: x.Index[:8] == city_code, cities_socr_snt))
-        snts=snts+cur_snt
-    if len(snts)==0:
-        snts=cities_socr_snt
-    villagies = []
-    for rn in cities_socr_rn:
-        rn_code=rn.Index[:5]
-
-        cur_vlgs = list(filter(lambda x: x.Index[:5] == rn_code, cities_socr_vlg))
-        villagies=villagies+cur_vlgs
-    if len(villagies)==0:
-        villagies=cities_socr_vlg    
-    unic_city_names = []
-    unic_city_codes = []
-    actual_codes = ['01','02','03','04','05','06','07','08','09'] + [str(i) for i in range(10,51)]    
-    
-    if len(villagies) == 0 and len(snts) == 0 and len(cities_socr_g) == 0:
-        possible_cities = getitems(regcities, tokens,areaquery, excludes)
-    
-    cities_wo_keys = []    
-    if len(possible_cities) > 0 and len(cities_socr_rn) > 0:
-        for rn in cities_socr_rn:
-            rn_code=rn.Index[:5]    
-            cur_cities = list(filter(lambda x: x.Index[:5] == rn_code, possible_cities))
-            cities_wo_keys=cities_wo_keys+cur_cities
-        
-    elif len(possible_cities) > 0 and len(context['area']) > 0:
-        for row in context['area']:
-            area_code = row.Index[:2]
-            cur_cities = list(filter(lambda x: x.Index[:2] == area_code, possible_cities))
-            cities_wo_keys=cities_wo_keys+cur_cities
-    if len(possible_cities) > 0 and len(cities_socr_rn) == 0:
-        for p in possible_cities:
-            if p.socr == 'р-н' and p not in cities_socr_rn:
-                cities_socr_rn.append(p)
-        cities_wo_keys = possible_cities
-
-
-    if len(cities_socr_rn) > 1:
-        max_len_rn = 0  
-        checked_rn = []
-        for row in cities_socr_rn:
-            if len(row.parts) > max_len_rn:
-                max_len_rn = len(row.parts)
-        if max_len_rn > 1:
-            for row in cities_socr_rn:
-                if len(row.parts) == max_len_rn:
-                    checked_rn.append(row)
-            cities_socr_rn = checked_rn
-    if len(cities_socr_g) > 1:
-        max_len_g = 0  
-        checked_rn = []
-        for row in cities_socr_g:
-            if len(row.parts) > max_len_g:
-                max_len_g = len(row.parts)
-        if max_len_g > 1:
-            for row in cities_socr_g:
-                if len(row.parts) == max_len_g:
-                    checked_rn.append(row)
-            cities_socr_g = checked_rn
-            
-        actual = []    
-        if len(cities_socr_g) > 1:
-            for row in cities_socr_g:
-                if row.Index[-2:] == '00':
-                    actual.append(row)
-            if len(actual) > 0:
-                cities_socr_g = actual
-    if len(snts) > 1:
-        max_len = 0  
-        checked_rn = []
-        for row in snts:
-            if len(row.parts) > max_len:
-                max_len = len(row.parts)
-        if max_len > 1:
-            for row in snts:
-                if len(row.parts) == max_len:
-                    checked_rn.append(row)
-            snts = checked_rn
-        actual = []    
-        if len(snts) > 1:
-            for row in snts:
-                if row.Index[-2:] == '00':
-                    actual.append(row)
-            if len(actual) > 0:
-                snts = actual
-    if len(villagies) > 1:
-        max_len = 0  
-        checked_rn = []
-        for row in snts:
-            if len(row.parts) > max_len:
-                max_len = len(row.parts)
-        if max_len > 1:
-            for row in villagies:
-                if len(row.parts) == max_len:
-                    checked_rn.append(row)
-            villagies = checked_rn
-        actual = []    
-        if len(villagies) > 1:
-            for row in villagies:
-                if row.Index[-2:] == '00':
-                    actual.append(row)
-            if len(actual) > 0:
-                villagies = actual
-    if len(cities_wo_keys) > 1:
-        max_len = 0  
-        checked_rn = []
-        for row in cities_wo_keys:
-            if len(row.parts) > max_len:
-                max_len = len(row.parts)
-        if max_len > 1:
-            for row in cities_wo_keys:
-                if len(row.parts) == max_len:
-                    checked_rn.append(row)
-            cities_wo_keys = checked_rn
-        actual = []    
-        if len(cities_wo_keys) > 1:
-            for row in cities_wo_keys:
-                if row.Index[-2:] == '00':
-                    actual.append(row)
-            if len(actual) > 0:
-                cities_wo_keys = actual
-
-    return cities_socr_rn,cities_socr_g,snts,villagies,cities_wo_keys
        
-def add_found_items_to_db(text, current_region_code):
+def normalize_address(address, current_region_code):
 
     result = {}
-    #cursor = cnxn.cursor()
-    cur=0
     t1 = datetime.datetime.now()
-    cur+=1
     region = ''
     region_code = ''
     district = []
@@ -1005,11 +551,11 @@ def add_found_items_to_db(text, current_region_code):
     locality_code = []
     snt = []
     snt_code = []
-
-    processed = 0
-    str_address = re.sub(r'\d{6}','',text)
-    str_address = re.sub(r'\d{2}:\d{2}:\d{5,9}:\d{3,4}','',str_address)
-    tokens = lemmatize_sent(str_address) 
+    
+    str_address = re.sub(r'\d{2}:\d{2}:\d{5,9}:\d{3,4}','',address)
+    str_address = re.sub(r'\d{6}','',str_address)
+    
+    tokens = lemmatize_sent(str_address, True) 
     if len(tokens) == 0:
         return None
     areas = []
@@ -1032,13 +578,19 @@ def add_found_items_to_db(text, current_region_code):
     cities_by_region = get_cities_by_region(areas)
     tokens = tokens_wo_excludes.copy()
     for group in tokens:
-        group_districts = search_district(group, cities_by_region, areas)
+        group_districts = search_district(group, cities_by_region)
         if len(group_districts) > 0:
             districts += group_districts
             tokens_wo_excludes.remove(group)
 
 
-    districts,cities,small_cities,villagies,possible_cities = search_city(tokens_wo_excludes, cities_by_region, areas, districts)
+    districts,cities,small_cities,villagies,possible_cities = search_city(tokens_wo_excludes, cities_by_region, districts, True)
+
+    if len(cities) == 0 and len(small_cities) == 0 and len(villagies) == 0 and len(possible_cities) == 0:
+        all_tokens = lemmatize_sent(str_address, False)
+        all_tokens = [x for x in all_tokens[0] if x != areas[0].name and x != areas[0].socr]
+        districts,cities,small_cities,villagies,possible_cities = search_city(all_tokens, cities_by_region, districts, False)
+
     
 
 
@@ -1098,10 +650,6 @@ def add_found_items_to_db(text, current_region_code):
             for row in areas_df.itertuples():
                 region = row.name
                 region_code = row.Index
-    if region_code=='' or len(city)==0:
-        processed = 0
-    else:
-        processed = 1
     
     strcity =", ".join(city)
     str_city_code =", ".join(city_code)
@@ -1114,8 +662,6 @@ def add_found_items_to_db(text, current_region_code):
 
     strsnt =", ".join(snt)
     str_snt_code =", ".join(snt_code)
-    # if len(strcity) > 500 or len(str_city_code) > 500 or len(strdistrict) > 500 or len(str_district_code) > 500:
-    #     return None
 
     t2 = datetime.datetime.now()
     dt = t2 - t1
@@ -1135,76 +681,99 @@ def add_found_items_to_db(text, current_region_code):
     return None
 
 
-        
-        
+
+vowels = ['а','у','о','ы','и','й','э','я','ю','ё','е']
+symbols = ":().,!;'?-\"@#$%^&*+ "
+key_words = ["г","обл","адрес","росреестр","ул","д","кв","республик","рх","рп","р","н",
+             "корп","федерац","область","округ","город","улиц","квартир","п","пер","мкр",
+             "муниципальн","район","дер","республика","улица"]
+
+stop_words = ["российская","федерация","муниципальный","рб","жилое","помещение","проектный",
+              "номер","этаже","подъезде","общей","проектной","площадью","учётом","холодных",
+              "помещений","квартира","однокомнатная","расположенная","этажного","жилого",
+              "находящаяся","находящегося","кадастровый","земельного","участка","управление",
+              "рф","адресу"]
+
+address_key_words = ['обл','область','край','респ','республика','город','г','гор','поселок',
+                         'посёлок','пгт','днт','снт','рп','дп','кп','нп',"ул","улиц","улица","проспект",
+                         "пр-кт","мкр","кв","квартира","к","дер","дом"]
+
+subjects = ["ао","аобл","край","обл","респ"]
+small_city_area = ["дп","кп","рп","нп","снт","днт","тер. днт","тер. снт","тер. тсн","тер", "жст"]
+villagies_key_words = ["пгт","с/мо","с/п","д","п","с","с/о","дер", "аул", "пос", "поселок", "посёлок", "деревня" , "село"]
+city_key_word = ["г","гор","город"]
+district_key_words = ["р","район","р-н"]
+
+#Для Наташи
+segmenter = Segmenter()
+
+df_cities = pd.DataFrame()
+df_cities_parts = pd.DataFrame()
+df_subjects = pd.DataFrame()
+
+# Грузим данные о населенных пунктах
+get_fias_data_by_region(database="kladr", host="localhost", user="postgres", password="ok", port="5432", region_code="23", table_name="public.kladr")
+                
 
 
+reg_objects_table = 'public.sochi_objects'
 
-def read_file(file_path):
-    f = open(file_path,'r',encoding='utf-8')
-    file_content = f.read()
-    f.close()
-    return file_content
-
-
-sochi_conn = psycopg2.connect(database="postgres",
+reg_conn = psycopg2.connect(database="postgres",
                         host="localhost",
                         user="postgres",
                         password="ok",
                         port="5432")
 
 # df_objects_sochi = pd.read_sql('SELECT address, id FROM public.rosreestr_not_living_obj_kladr where processed is null order by id',sochi_conn)
-df_objects_sochi = pd.read_sql('SELECT address, id FROM public.sochi_objects where processed_new is null order by id',sochi_conn)
-
-objects_sochi_list = df_objects_sochi.values.tolist()
-for obj in objects_sochi_list:
+df_reg_objects = pd.read_sql('SELECT address, id FROM ' + reg_objects_table + ' where processed_new is null order by id',reg_conn)
+# df_reg_objects = pd.read_sql('SELECT address, id FROM ' + reg_objects_table + ' where id = 14248 order by id',reg_conn)
+cursor = reg_conn.cursor() 
+reg_objects_list = df_reg_objects.values.tolist()
+for obj in reg_objects_list:
     curr_addr = obj[0]
-    if curr_addr is None:
-        continue
     curr_id = obj[1]
-    found_items = add_found_items_to_db(curr_addr, '23') 
-    print(curr_addr)
-    cursor = sochi_conn.cursor() 
-    postgres_update_query = """ update public.sochi_objects set processed_new = %s where id = %s"""
-    if found_items is not None:
-        postgres_insert_query = """ insert into public.processed_address_new (obj_id, address, processed, region, region_code, district, district_code, city, city_code, locality, locality_code, snt, snt_code) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) """
-        record_to_insert = (curr_id, curr_addr, 1,found_items['region'],found_items['region_code'],found_items['strdistrict'],found_items['str_district_code'],found_items['strcity'],found_items['str_city_code'],found_items['strlocality'],found_items['str_locality_code'],found_items['strsnt'],found_items['str_snt_code'])
+    print(curr_id)
+    reason = ""
+    cad_num = ""
+    processed_value = 1
+    
+    if curr_addr is None or curr_addr=="":
+        reason = 'пустой адрес'
+        processed_value = -1
+    elif check_if_real_estate(curr_addr.lower()):
+        reason = 'участок'
+        processed_value = -1
+    if curr_addr is not None:
+        cad_num = re.findall(r'\d{2}:\d{2}:\d{5,9}:\d{2,4}', curr_addr)
+        if len(cad_num)>0:
+            cad_num = ','.join(list(set(cad_num)))
+        else:
+            cad_num = ""
+    if processed_value!=-1:
+        found_items = normalize_address(curr_addr, '23') 
+        if found_items['strcity'] == '' and found_items['strlocality'] == '' and found_items['strsnt'] == '':
+            reason = 'отсутствует населенный пункт'
+            processed_value = -1
+        if found_items is not None:
+            postgres_insert_query = """ insert into public.processed_address_new (obj_id, address, processed, region, region_code, district, district_code, city, city_code, locality, locality_code, snt, snt_code, reason, cad_num) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) """
+            record_to_insert = (curr_id, curr_addr, processed_value,found_items['region'],found_items['region_code'],found_items['strdistrict'],found_items['str_district_code'],found_items['strcity'],found_items['str_city_code'],found_items['strlocality'],found_items['str_locality_code'],found_items['strsnt'],found_items['str_snt_code'], reason, cad_num)
+            cursor.execute(postgres_insert_query, record_to_insert)
+            print(curr_id, ' ', curr_addr,' region: ', found_items['region'],' district: ',found_items['strdistrict'],' city: ',found_items['strcity'],' locality: ',found_items['strlocality'],' snt: ',found_items['strsnt'], ' reason: ',reason,' cad_num: ', cad_num)
+    else:
+        postgres_insert_query = """ insert into public.processed_address_new (obj_id, address, processed, reason, cad_num) values (%s,%s,%s,%s,%s) """
+        record_to_insert = (curr_id, curr_addr, processed_value, reason, cad_num)
         cursor.execute(postgres_insert_query, record_to_insert)
+        print(curr_id, ' ', curr_addr, ' reason: ',reason,' cad_num: ', cad_num)
+
+    
+    postgres_update_query = """ update public.sochi_objects set processed_new = %s where id = %s"""
     cursor.execute(postgres_update_query, (1, curr_id))
-    sochi_conn.commit()    
+    reg_conn.commit()    
 
 
-
-# url_dataset_path = 'my_path'
-# prefix = 'clean_'
-# files = os.listdir(path=url_dataset_path)
-# files.remove('headers')
-# files.remove('processed')
-# for file in files:
-#     if file[:6] == prefix:
-#         filename_parts = file.split('_')
-#         url_id = filename_parts[1]
-#         file_content = read_file(url_dataset_path + '\\' + file)
-#         file_content = file_content.split('\n')
-#         for el in file_content:
-#             sents = list(sentenize(el))
-#             for s in sents:
-#                 s_text = s.text
-#                 if len(s_text) > 0:
-#                     found_items = add_found_items_to_db(s_text) 
-#                     if found_items is not None:
-#                         print(el)
-#                         cursor = cnxn.cursor()
-#                         if len(s_text) > 1000:
-#                              s_text = s_text[:999]
-#                         cursor.execute("insert into [OARB].[ADDRESS] ([URL_ID], [SENT], [PROCESSED], [REGION], [REGION_CODE], [DISTRICT], [DISTRICT_CODE], [CITY], [CITY_CODE],[p_tag_text]) values (?,?,?,?,?,?,?,?,?,?)",url_id, s_text, 1,found_items['region'],found_items['region_code'],found_items['strdistrict'],found_items['str_district_code'],found_items['strcity'],found_items['str_city_code'],el)
-#                         cnxn.commit()
-
-# os.system(r"path/copy_and_del.bat")
 
 cursor.close()
-cnxn.close()
-sochi_conn.close()
+reg_conn.close()
 
 print('Done')
      
