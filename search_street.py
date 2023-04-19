@@ -577,9 +577,9 @@ def search_house_num(address, street_end_index):
     return house_num.strip(), lit.strip(), house_part_num.strip(), corpus.strip()
 
 
-def load_addresses_from_db():
-    # addresses = pd.read_sql("SELECT obj_id,address,region, region_code, district, district_code, city, city_code, locality, locality_code, snt, snt_code FROM public.processed_address_new  where processed = 1 and region_code <> '' and city_code <> '' order by region,city limit 1000",regoper_conn)
-    addresses = pd.read_sql("SELECT obj_id,address,region, region_code, district, district_code, city, city_code, locality, locality_code, snt, snt_code FROM public.processed_address_new  where obj_id = 19939 order by region,city",regoper_conn)
+def load_addresses_from_db(result_table):
+    addresses = pd.read_sql("SELECT obj_id,address,region, region_code, district, district_code, city, city_code, locality, locality_code, snt, snt_code FROM " + result_table + " where processed = 1 and region_code <> '' and city_code <> '' order by region,city",regoper_conn)
+    # addresses = pd.read_sql("SELECT obj_id,address,region, region_code, district, district_code, city, city_code, locality, locality_code, snt, snt_code FROM " + result_table +  " where processed order by region,city",regoper_conn)
     cur = 0
     cursor = regoper_conn.cursor()
     t1 = datetime.datetime.now()
@@ -681,10 +681,10 @@ def load_addresses_from_db():
         if len(street) == 0 and reason != "":
             if len(city_district) > 0:
                 city_district = city_district[0].name
-                postgres_update_query = """ update public.processed_address_new set processed= %s, reason= %s, street_district =%s where obj_id = %s """
+                postgres_update_query = " update " + result_table + " set processed= %s, reason= %s, street_district =%s where obj_id = %s "
                 cursor.execute(postgres_update_query, (-1,reason, city_district, obj_id))
             else:
-                postgres_update_query = """ update public.processed_address_new set processed= %s, reason= %s where obj_id = %s """
+                postgres_update_query = " update " + result_table + " set processed= %s, reason= %s where obj_id = %s "
                 cursor.execute(postgres_update_query, (-1,reason, obj_id))
             print(obj_id, ' ', addr.address, ' ', reason)
         if len(street) > 0:
@@ -710,7 +710,7 @@ def load_addresses_from_db():
                     except:
                         checked_city = ''
                         checked_code = ''                        
-                    postgres_update_query = """ update public.processed_address_new set city= %s, city_code = %s where obj_id = %s """
+                    postgres_update_query = " update " + result_table + " set city= %s, city_code = %s where obj_id = %s "
                 elif len(cur_locality_code_arr) > 1:
                     cur_city_code_arr_croped = list(map(lambda x: x[:11],cur_locality_code_arr))
                     try:
@@ -720,7 +720,7 @@ def load_addresses_from_db():
                     except:
                         checked_city = ''
                         checked_code = ''
-                    postgres_update_query = """ update public.processed_address_new set locality= %s, locality_code = %s where obj_id = %s """
+                    postgres_update_query = " update " + result_table + " set locality= %s, locality_code = %s where obj_id = %s "
                 elif len(cur_snt_code_arr) > 1:
                     cur_city_code_arr_croped = list(map(lambda x: x[:11],cur_snt_code_arr))
                     try:
@@ -730,10 +730,10 @@ def load_addresses_from_db():
                     except:
                         checked_city = ''
                         checked_code = ''
-                    postgres_update_query = """ update public.processed_address_new set snt= %s, snt_code = %s where obj_id = %s """
+                    postgres_update_query = " update " + result_table + " set snt= %s, snt_code = %s where obj_id = %s "
                 cursor.execute(postgres_update_query, (checked_city,checked_code,obj_id))
                 
-            postgres_update_query = """ update public.processed_address_new set processed = %s, street_district =%s, street = %s, street_code = %s, house = %s, lit = %s,  house_part_num = %s, corpus = %s, reason = %s where obj_id = %s """
+            postgres_update_query = " update " +  result_table+ " set processed = %s, street_district =%s, street = %s, street_code = %s, house = %s, lit = %s,  house_part_num = %s, corpus = %s, reason = %s where obj_id = %s "
             cursor.execute(postgres_update_query, (2,city_district, street[0].name,street_code, house_num, lit, house_part_num, corpus, reason, obj_id))
             # cursor.execute("update [OARB].[ADDRESS] set [PROCESSED] = 2, [STREET] = ?, [STREET_code] = ?, [HOUSE] = ? where [obj_id] = ? and [address] = ?", street[0].name,street_code,found_house_number,obj_id, addr.address)
             print(obj_id, ' ', addr.address,' district: ',city_district, ', street: ',street[0].name, ', house: ',house_num, ', lit: ', lit, ' house_part_num: ',house_part_num, ', corpus: ', corpus) 
@@ -787,7 +787,9 @@ regoper_conn = psycopg2.connect(database="postgres",
 streets_df = pd.DataFrame()
 
 
-load_addresses_from_db()     
+result_table = 'rosreestr.rosreestr_50_14_processed'
+
+load_addresses_from_db(result_table)     
 
           
 cnxn.close()   

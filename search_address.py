@@ -78,6 +78,7 @@ def lemmatize_sent(sent, comma_flag):
     sent = sent.replace('р-н','район')
     sent = sent.replace('р-он','район')
     sent = sent.replace(' р.п. ',' рп ')
+    sent = sent.replace('ё','е')
     sent = sent.replace('пр-кт','проспект')
     sent = sent.replace('город-курорт','город')
     sent = sent.replace('эсто-садок','эстосадок')
@@ -711,12 +712,16 @@ df_cities = pd.DataFrame()
 df_cities_parts = pd.DataFrame()
 df_subjects = pd.DataFrame()
 
+
+region_code = '50'
 # Грузим данные о населенных пунктах
-get_fias_data_by_region(database="kladr", host="localhost", user="postgres", password="ok", port="5432", region_code="23", table_name="public.kladr")
+get_fias_data_by_region(database="kladr", host="localhost", user="postgres", password="ok", port="5432", region_code=region_code, table_name="public.kladr")
                 
 
 
-reg_objects_table = 'public.sochi_objects'
+reg_objects_table = 'moscow.zone_50_14_address'
+
+result_table = 'moscow.zone_50_14_processed'
 
 reg_conn = psycopg2.connect(database="postgres",
                         host="localhost",
@@ -725,7 +730,7 @@ reg_conn = psycopg2.connect(database="postgres",
                         port="5432")
 
 # df_objects_sochi = pd.read_sql('SELECT address, id FROM public.rosreestr_not_living_obj_kladr where processed is null order by id',sochi_conn)
-df_reg_objects = pd.read_sql('SELECT address, id FROM ' + reg_objects_table + ' where processed_new is null order by id',reg_conn)
+df_reg_objects = pd.read_sql('SELECT address, id FROM ' + reg_objects_table + ' where processed is null order by id',reg_conn)
 # df_reg_objects = pd.read_sql('SELECT address, id FROM ' + reg_objects_table + ' where id = 14248 order by id',reg_conn)
 cursor = reg_conn.cursor() 
 reg_objects_list = df_reg_objects.values.tolist()
@@ -750,23 +755,23 @@ for obj in reg_objects_list:
         else:
             cad_num = ""
     if processed_value!=-1:
-        found_items = normalize_address(curr_addr, '23') 
+        found_items = normalize_address(curr_addr, region_code) 
         if found_items['strcity'] == '' and found_items['strlocality'] == '' and found_items['strsnt'] == '':
             reason = 'отсутствует населенный пункт'
             processed_value = -1
         if found_items is not None:
-            postgres_insert_query = """ insert into public.processed_address_new (obj_id, address, processed, region, region_code, district, district_code, city, city_code, locality, locality_code, snt, snt_code, reason, cad_num) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) """
+            postgres_insert_query = "insert into " + result_table + " (obj_id, address, processed, region, region_code, district, district_code, city, city_code, locality, locality_code, snt, snt_code, reason, cad_num) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
             record_to_insert = (curr_id, curr_addr, processed_value,found_items['region'],found_items['region_code'],found_items['strdistrict'],found_items['str_district_code'],found_items['strcity'],found_items['str_city_code'],found_items['strlocality'],found_items['str_locality_code'],found_items['strsnt'],found_items['str_snt_code'], reason, cad_num)
             cursor.execute(postgres_insert_query, record_to_insert)
             print(curr_id, ' ', curr_addr,' region: ', found_items['region'],' district: ',found_items['strdistrict'],' city: ',found_items['strcity'],' locality: ',found_items['strlocality'],' snt: ',found_items['strsnt'], ' reason: ',reason,' cad_num: ', cad_num)
     else:
-        postgres_insert_query = """ insert into public.processed_address_new (obj_id, address, processed, reason, cad_num) values (%s,%s,%s,%s,%s) """
+        postgres_insert_query = "insert into " + result_table + " (obj_id, address, processed, reason, cad_num) values (%s,%s,%s,%s,%s) "
         record_to_insert = (curr_id, curr_addr, processed_value, reason, cad_num)
         cursor.execute(postgres_insert_query, record_to_insert)
         print(curr_id, ' ', curr_addr, ' reason: ',reason,' cad_num: ', cad_num)
 
     
-    postgres_update_query = """ update public.sochi_objects set processed_new = %s where id = %s"""
+    postgres_update_query = " update " + reg_objects_table + " set processed = %s where id = %s"
     cursor.execute(postgres_update_query, (1, curr_id))
     reg_conn.commit()    
 
